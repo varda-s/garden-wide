@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Perspective Gallery</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; }
+    #wrap { position: fixed; inset: 0; overflow: hidden; }
+    #c { display: block; width: 100%; height: 100%; cursor: grab; }
+    #c:active { cursor: grabbing; }
+    #hint {
+      position: absolute; bottom: 14px; left: 50%;
+      transform: translateX(-50%);
+      font-family: sans-serif; font-size: 11px;
+      color: rgba(255,255,255,0.35);
+      pointer-events: none; white-space: nowrap;
+    }
+    #crosshair {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none; opacity: 0; transition: opacity 0.3s;
+    }
+    #crosshair svg { width: 24px; height: 24px; }
+    #flash {
+      position: absolute; inset: 0;
+      background: white; opacity: 0;
+      pointer-events: none; transition: opacity 0.5s;
+    }
+    #cluster-label {
+      position: absolute; top: 14px; left: 50%;
+      transform: translateX(-50%);
+      font-family: sans-serif; font-size: 12px;
+      color: rgba(255,255,255,0.5);
+      letter-spacing: 1px; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="c"></canvas>
+    <div id="hint">drag to look &nbsp;·&nbsp; scroll to walk &nbsp;·&nbsp; click horizon to teleport</div>
+    <div id="crosshair">
+      <svg viewBox="0 0 24 24" fill="none" stroke="rgba(255,200,100,0.9)" stroke-width="1.5">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="2"  x2="12" y2="7"/>
+        <line x1="12" y1="17" x2="12" y2="22"/>
+        <line x1="2"  y1="12" x2="7"  y2="12"/>
+        <line x1="17" y1="12" x2="22" y2="12"/>
+      </svg>
+    </div>
+    <div id="flash"></div>
+    <div id="cluster-label">CLUSTER 1</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    let W, H;
+
+    function resize() {
+      W = canvas.offsetWidth;
+      H = canvas.offsetHeight;
+      canvas.width  = W * devicePixelRatio;
+      canvas.height = H * devicePixelRatio;
+      ctx.scale(devicePixelRatio, devicePixelRatio);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    const GROUND_Y = 0;
+    const EYE_Y   = -90;
+    const FOV      = 520;
+
+    const clusterConfigs = [
+      {
+        label: 'CLUSTER 1',
+        palette: [
+          ['#e8c4a0','#b08060'],['#d4b090','#907050'],['#c8a880','#886848'],
+          ['#f0d4b0','#c09070'],['#e0c090','#a07848'],['#dcc4a4','#ac8464']
+        ],
+        tint: 'rgba(180,80,20,',
+        ground1: '#3a1508', ground2: '#6a2510',
+        sky1: '#0a0510', sky2: '#3a1520', sky3: '#c04020', sky4: '#f08030', sky5: '#ffc060'
+      },
+      {
+        label: 'CLUSTER 2',
+        palette: [
+          ['#a0b8e8','#607090'],['#90a8d4','#506070'],['#80a0c8','#486070'],
+          ['#b0c4f0','#809090'],['#c0d0e0','#809090'],['#a4b8dc','#6480a4']
+        ],
+        tint: 'rgba(20,40,80,',
+        ground1: '#080c1a', ground2: '#0a1830',
+        sky1: '#000208', sky2: '#051025', sky3: '#102060', sky4: '#2040a0', sky5: '#4080e0'
+      },
+      {
+        label: 'CLUSTER 3',
+        palette: [
+          ['#a8e8b0','#508060'],['#90d4a0','#407050'],['#80c8a0','#486858'],
+          ['#b0f0c0','#609070'],['#c0e8c4','#70a878'],['#a4dca8','#5a8464']
+        ],
+        tint: 'rgba(10,60,20,',
+        ground1: '#030d05', ground2: '#081a0a',
+        sky1: '#010402', sky2: '#021008', sky3: '#0a3015', sky4: '#1a6030', sky5: '#30b060'
+      },
+      {
+        label: 'CLUSTER 4',
+        palette: [
+          ['#e8a0e8','#805080'],['#d490d4','#704070'],['#c880c8','#684868'],
+          ['#f0b0f0','#908090'],['#e0c0e0','#906890'],['#dca4dc','#845484']
+        ],
+        tint: 'rgba(80,10,80,',
+        ground1: '#0d030d', ground2: '#1a081a',
+        sky1: '#040105', sky2: '#100510', sky3: '#301030', sky4: '#6020a0', sky5: '#c060e0'
+      },
+    ];
+
+    let currentCluster = 0;
+    let transitioning  = false;
+
+    function makeRects(cfg) {
+      const rects = [];
+      for (let i = 0; i < 30; i++) {
+        const col  = cfg.palette[i % cfg.palette.length];
+        const sign = i % 2 === 0 ? 1 : -1;
+        const side = 80 + (i % 4) * 50;
+        const depth = -300 - i * 170 + (i % 3) * 50;
+        const w = 60 + (i * 37 % 90);
+        const h = 80 + (i * 53 % 130);
+        rects.push({ x: sign * side, y: GROUND_Y, z: depth, w, h, fill: col[0], stroke: col[1] });
+      }
+      return rects;
+    }
+
+    const allRects = clusterConfigs.map(makeRects);
+
+    let camZ = 0, yaw = 0;
+    let dragging = false, lastMX = 0;
+    let velZ = 0, velYaw = 0;
+    let mouseMoved = false;
+    let mouseX = 0, mouseY = 0;
+
+    canvas.addEventListener('mousedown', e => {
+      dragging = true; lastMX = e.clientX; velYaw = 0; mouseMoved = false;
+    });
+    window.addEventListener('mouseup', () => { dragging = false; });
+    window.addEventListener('mousemove', e => {
+      const r = canvas.getBoundingClientRect();
+      mouseX = e.clientX - r.left;
+      mouseY = e.clientY - r.top;
+      if (!dragging) return;
+      const dx = e.clientX - lastMX;
+      if (Math.abs(dx) > 2) mouseMoved = true;
+      velYaw = dx * 0.004; yaw -= dx * 0.004; lastMX = e.clientX;
+    });
+    canvas.addEventListener('click', e => {
+      if (mouseMoved) return;
+      const r = canvas.getBoundingClientRect();
+      handleClick(e.clientX - r.left, e.clientY - r.top);
+    });
+    canvas.addEventListener('touchstart', e => {
+      dragging = true; lastMX = e.touches[0].clientX; velYaw = 0; mouseMoved = false;
+    });
+    window.addEventListener('touchend', () => { dragging = false; });
+    window.addEventListener('touchmove', e => {
+      if (!dragging) return;
+      const dx = e.touches[0].clientX - lastMX;
+      if (Math.abs(dx) > 2) mouseMoved = true;
+      velYaw = dx * 0.004; yaw -= dx * 0.004; lastMX = e.touches[0].clientX;
+    });
+    canvas.addEventListener('wheel', e => {
+      velZ -= e.deltaY * 0.8; e.preventDefault();
+    }, { passive: false });
+
+    function project(wx, wy, wz) {
+      const cy = Math.cos(yaw), sy = Math.sin(yaw);
+      const rx = cy * wx + sy * (wz - camZ);
+      const rz = -sy * wx + cy * (wz - camZ);
+      const ry = wy - EYE_Y;
+      if (rz >= -10) return null;
+      const scale = FOV / (-rz);
+      return { sx: W / 2 + rx * scale, sy: H / 2 + ry * scale, scale, depth: rz };
+    }
+
+    function getHorizonY() {
+      const h = project(0, EYE_Y, -99999);
+      return h ? h.sy : H * 0.45;
+    }
+
+    function drawRectProjected(r) {
+      const hw = r.w / 2;
+      const proj = [
+        [r.x - hw, r.y,       r.z],
+        [r.x + hw, r.y,       r.z],
+        [r.x + hw, r.y - r.h, r.z],
+        [r.x - hw, r.y - r.h, r.z],
+      ].map(([x, y, z]) => project(x, y, z));
+      if (proj.some(p => !p)) return null;
+      const depth = proj.reduce((a, p) => a + p.depth, 0) / 4;
+      return { proj, depth, r };
+    }
+
+    function isClickOnRect(cx, cy, proj) {
+      const xs = proj.map(p => p.sx), ys = proj.map(p => p.sy);
+      let inside = false;
+      for (let i = 0, j = 3; i < 4; j = i++) {
+        if (((ys[i] > cy) !== (ys[j] > cy)) &&
+            (cx < (xs[j] - xs[i]) * (cy - ys[i]) / (ys[j] - ys[i]) + xs[i]))
+          inside = !inside;
+      }
+      return inside;
+    }
+
+    function handleClick(cx, cy) {
+      if (transitioning) return;
+      const hy   = getHorizonY();
+      const band = 60;
+      const items = allRects[currentCluster].map(drawRectProjected).filter(Boolean);
+      const hitRect = items.some(({ proj }) => isClickOnRect(cx, cy, proj));
+      if (!hitRect && Math.abs(cy - hy) < band) teleport();
+    }
+
+    function teleport() {
+      transitioning = true;
+      const next = (currentCluster + 1) % clusterConfigs.length;
+      const f = document.getElementById('flash');
+      f.style.transition = 'opacity 0.15s';
+      f.style.opacity = '1';
+      setTimeout(() => {
+        currentCluster = next;
+        camZ = 0; yaw = 0; velZ = 0; velYaw = 0;
+        document.getElementById('cluster-label').textContent = clusterConfigs[currentCluster].label;
+        f.style.transition = 'opacity 0.5s';
+        f.style.opacity = '0';
+        setTimeout(() => { transitioning = false; }, 500);
+      }, 150);
+    }
+
+    function drawBackground(hy, cfg) {
+      const cHy = Math.max(0, Math.min(H, hy));
+
+      const sky = ctx.createLinearGradient(0, 0, 0, cHy);
+      sky.addColorStop(0,    cfg.sky1);
+      sky.addColorStop(0.3,  cfg.sky2);
+      sky.addColorStop(0.6,  cfg.sky3);
+      sky.addColorStop(0.82, cfg.sky4);
+      sky.addColorStop(1,    cfg.sky5);
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, cHy);
+
+      const sunX = W * 0.5, sunY = cHy - 4, sunR = 28;
+      const sg = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR * 2.5);
+      sg.addColorStop(0,   'rgba(255,240,180,0.95)');
+      sg.addColorStop(0.2, 'rgba(255,200,80,0.7)');
+      sg.addColorStop(0.6, 'rgba(255,120,20,0.25)');
+      sg.addColorStop(1,   'rgba(255,60,0,0)');
+      ctx.fillStyle = sg;
+      ctx.beginPath(); ctx.arc(sunX, sunY, sunR * 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,245,200,0.95)';
+      ctx.beginPath(); ctx.arc(sunX, sunY, sunR * 0.7, 0, Math.PI * 2); ctx.fill();
+
+      const ground = ctx.createLinearGradient(0, cHy, 0, H);
+      ground.addColorStop(0, cfg.ground1);
+      ground.addColorStop(1, cfg.ground2);
+      ctx.fillStyle = ground;
+      ctx.fillRect(0, cHy, W, H - cHy);
+
+      const glow = ctx.createLinearGradient(0, cHy - 30, 0, cHy + 30);
+      glow.addColorStop(0,   'rgba(255,160,40,0)');
+      glow.addColorStop(0.5, 'rgba(255,160,40,0.18)');
+      glow.addColorStop(1,   'rgba(255,80,0,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, cHy - 30, W, 60);
+    }
+
+    function drawGrid() {
+      const GRID = 200, RANGE = 3000;
+      ctx.strokeStyle = 'rgba(255,180,80,0.07)';
+      ctx.lineWidth = 0.5;
+      for (let z = -RANGE; z <= 200; z += GRID) {
+        const a = project(-RANGE, GROUND_Y, z), b = project(RANGE, GROUND_Y, z);
+        if (!a || !b) continue;
+        ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); ctx.stroke();
+      }
+      for (let x = -RANGE; x <= RANGE; x += GRID) {
+        const a = project(x, GROUND_Y, -RANGE), b = project(x, GROUND_Y, 200);
+        if (!a || !b) continue;
+        ctx.beginPath(); ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); ctx.stroke();
+      }
+    }
+
+    function checkHover(hy) {
+      const band = 60;
+      const nearHorizon = Math.abs(mouseY - hy) < band;
+      const items = allRects[currentCluster].map(drawRectProjected).filter(Boolean);
+      const hitRect = items.some(({ proj }) => isClickOnRect(mouseX, mouseY, proj));
+      const show = nearHorizon && !hitRect && !transitioning;
+      document.getElementById('crosshair').style.opacity = show ? '1' : '0';
+      canvas.style.cursor = show ? 'crosshair' : (dragging ? 'grabbing' : 'grab');
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      if (!dragging) { velYaw *= 0.88; yaw -= velYaw; }
+      velZ *= 0.92; camZ += velZ;
+
+      const cfg = clusterConfigs[currentCluster];
+      const hy  = getHorizonY();
+      drawBackground(hy, cfg);
+      drawGrid();
+      checkHover(hy);
+
+      const items = allRects[currentCluster].map(drawRectProjected).filter(Boolean);
+      items.sort((a, b) => a.depth - b.depth);
+      items.forEach(({ proj, r }) => {
+        const dist = Math.abs(proj.reduce((a, p) => a + p.depth, 0) / 4);
+        const fog  = Math.max(0, Math.min(1, (dist - 200) / 2500));
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(proj[0].sx, proj[0].sy);
+        for (let i = 1; i < 4; i++) ctx.lineTo(proj[i].sx, proj[i].sy);
+        ctx.closePath();
+        ctx.fillStyle = r.fill; ctx.fill();
+        if (fog > 0) { ctx.fillStyle = cfg.tint + (fog * 0.55) + ')'; ctx.fill(); }
+        ctx.strokeStyle = r.stroke; ctx.lineWidth = 1; ctx.stroke();
+        ctx.restore();
+      });
+
+      requestAnimationFrame(draw);
+    }
+    draw();
+  </script>
+</body>
+</html>
